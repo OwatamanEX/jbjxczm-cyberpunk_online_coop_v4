@@ -809,7 +809,7 @@ function beginGame() {
   document.getElementById('overlay').style.display = 'none';
 
   score=0; combo=0; frameN=0; gameTime=0; synergy=0;
-  bossActive=false; bossWarningTimer=0;
+  bossActive=false; bossWarningTimer=0; synergyCooldown=0;
   pBullets=[]; p2Bullets=[]; eBullets=[]; enemies=[]; particles=[]; powerups=[];
 
   localPlayer  = makePlayer(myRole);
@@ -1174,16 +1174,23 @@ function killEnemy(e){
   e.alive=false;
   const delta=e.score*(1+combo*0.1); score+=delta;
   if(myRole===1) send('score-delta',{delta});
-  addCombo(3); synergy=Math.min(100,synergy+5);
+  addCombo(3);
+  if(!synergyBurstActive && synergyCooldown<=0) synergy=Math.min(100,synergy+5);
   spawnExplosion(e.x,e.y,e.color,e.size);
   playSfx(e.type.startsWith('boss')?'explosion':'hit');
   if(Math.random()<0.22) spawnPowerup(e.x,e.y);
   if(e.type.startsWith('boss')) onBossKilled();
 }
 
+let synergyCooldown = 0; // cooldown frames after burst ends
+
 function addCombo(n=1){
-  combo+=n; comboTimer=150; synergy=Math.min(100,synergy+1);
-  if(synergy>=100&&!synergyBurstActive) triggerSynergyBurst();
+  combo+=n; comboTimer=150;
+  // Don't charge synergy while burst is active or in cooldown
+  if(!synergyBurstActive && synergyCooldown<=0){
+    synergy=Math.min(100,synergy+1);
+    if(synergy>=100) triggerSynergyBurst();
+  }
 }
 
 function hitLocalPlayer(){
@@ -1219,7 +1226,9 @@ function remoteBomb(){
 //  SYNERGY BURST
 // ================================================================
 function triggerSynergyBurst(){
+  if(synergyBurstActive) return; // 二重発動防止
   synergyBurstActive=true;
+  synergy=100;
   addNotice('⚡ SYNERGY BURST ⚡','#ffee00'); flashAlpha=1.2; shakeCanvas(1.5);
   playSfx('synergy');
   for(const e of enemies){
@@ -1227,7 +1236,12 @@ function triggerSynergyBurst(){
     else { e.hp-=80; spawnExplosion(e.x,e.y,e.color,e.size); }
   }
   eBullets=[];
-  setTimeout(()=>{ synergyBurstActive=false; synergy=0; addNotice('SYNERGY DEPLETED','#334'); },5000);
+  setTimeout(()=>{
+    synergyBurstActive=false;
+    synergy=0;
+    synergyCooldown=300; // 5秒間は再チャージ不可（60fps×5）
+    addNotice('SYNERGY DEPLETED','#445566');
+  }, 5000);
 }
 
 // ================================================================
@@ -1250,7 +1264,7 @@ function updatePowerups(){
       if(p.type==='shield') localPlayer.shield=Math.min(localPlayer.maxShield,localPlayer.shield+40);
       if(p.type==='bomb')   localPlayer.bombs=Math.min(5,localPlayer.bombs+1);
       if(p.type==='score')  { const d=2000*(1+combo*0.1); score+=d; send('score-delta',{delta:d}); }
-      if(p.type==='sync')   { synergy=Math.min(100,synergy+30); addNotice('SYNC +30','#fff'); }
+      if(p.type==='sync')   { if(!synergyBurstActive){ synergy=Math.min(100,synergy+30); addNotice('SYNC +30','#fff'); } else { addNotice('SYNC BLOCKED','#555'); } }
       send('hit',{hp:localPlayer.hp,lives:localPlayer.lives,shield:localPlayer.shield,bombs:localPlayer.bombs});
       updateHUDDisplay();
     }
@@ -1300,6 +1314,7 @@ function updateLocalPlayer(){
   if(localPlayer.invincible>0) localPlayer.invincible--;
   if(comboTimer>0){ comboTimer--; if(!comboTimer) combo=0; }
   if(synergyBurstActive) synergy=Math.max(0,synergy-0.4);
+  if(synergyCooldown>0){ synergyCooldown--; synergy=0; } // クールダウン中はゲージ0固定
 
   // Boss warning countdown
   if(bossWarningTimer>0){
@@ -1323,12 +1338,12 @@ function broadcastStateSync(){
       type:e.type,angle:e.angle,size:e.size,color:e.color,phaseTimer:e.phaseTimer||0,moveTimer:e.moveTimer})),
     eBullets:eBullets.slice(0,300).map(b=>({x:b.x,y:b.y,vx:b.vx,vy:b.vy,color:b.color,size:b.size})),
     bossActive,stage,gameTime,score,combo,synergy,
+    synergyBurstActive, // ← 追加
     powerups:powerups.map(p=>({...p})),
   });
 }
 
 function applyStateSync(d){
-  // Update enemies and bullets from authoritative P1 state
   if(d.enemies) enemies = d.enemies.map(e=>({...e, shootTimer:0, phaseTimer:e.phaseTimer||0}));
   if(d.eBullets) eBullets = d.eBullets.map(b=>({...b, alive:true}));
   if(d.bossActive !== undefined) bossActive = d.bossActive;
@@ -1338,7 +1353,15 @@ function applyStateSync(d){
   if(d.combo !== undefined){ combo = d.combo; comboTimer = Math.max(comboTimer, 60); }
   if(d.powerups) powerups = d.powerups;
 
-  // Stage changed: update HUD only — do NOT call loadStage() as it resets enemies/bullets
+  // P2はP1のバースト状態をそのまま反映（自分でsetTimeoutしない）
+  if(d.synergyBurstActive !== undefined){
+    const wasActive = synergyBurstActive;
+    synergyBurstActive = d.synergyBurstActive;
+    if(wasActive && !synergyBurstActive){
+      addNotice('SYNERGY DEPLETED','#445566'); // P2にも終了通知
+    }
+  }
+
   if(d.stage && d.stage !== stage){
     stage = d.stage;
     gameTime = 0;

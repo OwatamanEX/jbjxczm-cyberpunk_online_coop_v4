@@ -8,7 +8,7 @@
 
 ## 🎮 プレイ
 
-**[▶ GitHub Pages でプレイ](https://あなたのユーザー名.github.io/リポジトリ名/)**
+**[▶ GitHub Pages でプレイ]([https://owatamanex.github.io/jbjxczm-cyberpunk_online_coop_v4/])**
 
 ---
 
